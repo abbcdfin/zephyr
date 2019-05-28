@@ -20,6 +20,7 @@ LOG_MODULE_REGISTER(net_if, CONFIG_NET_IF_LOG_LEVEL);
 
 #include "net_private.h"
 #include "ipv6.h"
+#include "rpl.h"
 #include "ipv4_autoconf_internal.h"
 
 #include "net_stats.h"
@@ -1001,6 +1002,9 @@ struct net_if_addr *net_if_ipv6_addr_add(struct net_if *iface,
 	}
 
 	for (i = 0; i < NET_IF_MAX_IPV6_ADDR; i++) {
+#if defined(CONFIG_NET_RPL)
+		struct in6_addr *global;
+#endif
 		if (ipv6->unicast[i].is_used) {
 			continue;
 		}
@@ -1022,7 +1026,15 @@ struct net_if_addr *net_if_ipv6_addr_add(struct net_if *iface,
 		 */
 		join_mcast_nodes(iface, &ipv6->unicast[i].address.in6_addr);
 
+#if defined(CONFIG_NET_RPL)
+		/* Do not send DAD for global addresses */
+		global = check_global_addr(iface);
+		if (!net_ipv6_addr_cmp(global, addr)) {
+			net_if_ipv6_start_dad(iface, &ipv6->unicast[i]);
+		}
+#else
 		net_if_ipv6_start_dad(iface, &ipv6->unicast[i]);
+#endif
 
 		net_mgmt_event_notify(NET_EVENT_IPV6_ADDR_ADD, iface);
 
@@ -3192,4 +3204,9 @@ void net_if_post_init(void)
 			net_if_up(iface);
 		}
 	}
+
+	/* RPL init must be done after the network interface is up
+	 * as the RPL code wants to add multicast address to interface.
+	 */
+	net_rpl_init();
 }

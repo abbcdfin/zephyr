@@ -43,6 +43,7 @@ LOG_MODULE_REGISTER(net_core, CONFIG_NET_CORE_LOG_LEVEL);
 #include "dhcpv4.h"
 
 #include "route.h"
+#include "rpl.h"
 
 #include "packet_socket.h"
 #include "canbus_socket.h"

@@ -22,6 +22,10 @@ LOG_MODULE_REGISTER(net_icmpv6, CONFIG_NET_ICMPV6_LOG_LEVEL);
 #include "ipv6.h"
 #include "net_stats.h"
 
+#if defined(CONFIG_NET_RPL)
+#include "rpl.h"
+#endif
+
 #define PKT_WAIT_TIME K_SECONDS(1)
 
 static sys_slist_t handlers;
@@ -138,6 +142,42 @@ enum net_verdict icmpv6_handle_echo_request(struct net_pkt *pkt,
 	} else {
 		src = &ip_hdr->dst;
 	}
+
+	/* Set up IPv6 Header fields */
+	NET_IPV6_HDR(pkt)->vtc = 0x60;
+	NET_IPV6_HDR(pkt)->tcflow = 0;
+	NET_IPV6_HDR(pkt)->flow = 0;
+	NET_IPV6_HDR(pkt)->hop_limit = net_if_ipv6_get_hop_limit(iface);
+
+	if (net_ipv6_is_addr_mcast(&NET_IPV6_HDR(pkt)->dst)) {
+		net_ipaddr_copy(&NET_IPV6_HDR(pkt)->dst,
+				&NET_IPV6_HDR(orig)->src);
+
+		net_ipaddr_copy(&NET_IPV6_HDR(pkt)->src,
+				net_if_ipv6_select_src_addr(iface,
+						    &NET_IPV6_HDR(orig)->dst));
+	} else {
+		struct in6_addr addr;
+
+		net_ipaddr_copy(&addr, &NET_IPV6_HDR(orig)->src);
+		net_ipaddr_copy(&NET_IPV6_HDR(pkt)->src,
+				&NET_IPV6_HDR(orig)->dst);
+		net_ipaddr_copy(&NET_IPV6_HDR(pkt)->dst, &addr);
+	}
+
+	if (NET_IPV6_HDR(pkt)->nexthdr == NET_IPV6_NEXTHDR_HBHO) {
+#if defined(CONFIG_NET_RPL)
+		u16_t offset = NET_IPV6H_LEN;
+
+		if (net_rpl_revert_header(pkt, offset, &offset) < 0) {
+			/* TODO: Handle error cases */
+			goto drop;
+		}
+#endif
+	}
+
+	net_pkt_lladdr_src(pkt)->addr = net_pkt_lladdr_dst(orig)->addr;
+	net_pkt_lladdr_src(pkt)->len = net_pkt_lladdr_dst(orig)->len;
 
 	/* We must not set the destination ll address here but trust
 	 * that it is set properly using a value from neighbor cache.
