@@ -95,19 +95,11 @@ int net_ipv6_finalize(struct net_pkt *pkt, u8_t next_header_proto)
 {
 	NET_PKT_DATA_ACCESS_CONTIGUOUS_DEFINE(ipv6_access, struct net_ipv6_hdr);
 	struct net_ipv6_hdr *ipv6_hdr;
+        struct net_pkt_cursor hdr_begin;
+        u8_t next_hdr;
 
 	net_pkt_set_overwrite(pkt, true);
 
-#if defined(CONFIG_NET_UDP) && defined(CONFIG_NET_RPL_INSERT_HBH_OPTION)
-	if (next_header_proto != IPPROTO_TCP &&
-	    next_header_proto != IPPROTO_ICMPV6) {
-		/* Check if we need to add RPL header to sent UDP packet. */
-		if (net_rpl_insert_header(pkt) < 0) {
-			NET_DBG("RPL HBHO insert failed");
-			return -EINVAL;
-		}
-	}
-#endif
 	net_pkt_compact(pkt);
 
 	ipv6_hdr = (struct net_ipv6_hdr *)net_pkt_get_data(pkt, &ipv6_access);
@@ -126,7 +118,14 @@ int net_ipv6_finalize(struct net_pkt *pkt, u8_t next_header_proto)
 
 	net_pkt_set_data(pkt, &ipv6_access);
 
-	if (net_pkt_ipv6_next_hdr(pkt) != 255U &&
+        /* update next_header in hop-by-hop options header */
+        if (ipv6_hdr->nexthdr == NET_IPV6_NEXTHDR_HBHO) {
+                net_pkt_cursor_backup(pkt, &hdr_begin);
+                net_pkt_write_u8(pkt, next_header_proto);
+                net_pkt_cursor_restore(pkt, &hdr_begin);
+        }
+
+        if (net_pkt_ipv6_next_hdr(pkt) != 255U &&
 	    net_pkt_skip(pkt, net_pkt_ipv6_ext_len(pkt))) {
 		return -ENOBUFS;
 	}
@@ -240,18 +239,11 @@ static inline int ipv6_handle_ext_hdr_options(struct net_pkt *pkt,
 #if defined(CONFIG_NET_RPL)
 		case NET_IPV6_EXT_HDR_OPT_RPL:
 			NET_DBG("Processing RPL option");
-			frag = net_rpl_verify_header(pkt, frag, loc, &loc,
-						     &result);
-			if (!result) {
-				NET_DBG("RPL option error, packet dropped");
-				goto drop;
-			}
+			if (net_rpl_verify_header(pkt)) {
+                                return -ENOTSUP;
+                        };
 
-			if (!frag && *pos == 0xffff) {
-				goto drop;
-			}
-
-			*verdict = NET_CONTINUE;
+                        length += opt_len + 2;
 			return frag;
 #endif
 		default:

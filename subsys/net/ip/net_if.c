@@ -63,6 +63,9 @@ static struct {
 	struct net_if_ipv6 ipv6;
 	struct net_if *iface;
 } ipv6_addresses[CONFIG_NET_IF_MAX_IPV6_COUNT];
+
+static inline struct in6_addr *check_global_addr(struct net_if *iface,
+						 enum net_addr_state state);
 #endif /* CONFIG_NET_IPV6 */
 
 #if defined(CONFIG_NET_IPV4)
@@ -1028,7 +1031,7 @@ struct net_if_addr *net_if_ipv6_addr_add(struct net_if *iface,
 
 #if defined(CONFIG_NET_RPL)
 		/* Do not send DAD for global addresses */
-		global = check_global_addr(iface);
+		global = check_global_addr(iface, NET_ADDR_PREFERRED);
 		if (!net_ipv6_addr_cmp(global, addr)) {
 			net_if_ipv6_start_dad(iface, &ipv6->unicast[i]);
 		}

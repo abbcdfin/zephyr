@@ -453,16 +453,6 @@ struct net_route_entry *net_rpl_add_route(struct net_rpl_dag *dag,
 		}							\
 	} while (0)
 
-#define write_pkt(pkt, frag, offset, pos, type, value)			\
-	do {								\
-		if (!net_pkt_write_##type##_timeout(pkt, frag,		\
-						    offset, pos, value,	\
-						    BUF_TIMEOUT)) {	\
-			ret = -ENOMEM;					\
-			goto drop;					\
-		}							\
-	} while (0)
-
 static inline int setup_icmpv6_hdr(struct net_pkt *pkt, u8_t type,
 				    u8_t code)
 {
@@ -762,7 +752,11 @@ int net_rpl_dis_send(struct in6_addr *dst, struct net_if *iface)
 		dst_addr = dst;
 	}
 
-	pkt = net_pkt_get_reserve_tx(BUF_TIMEOUT);
+	pkt = net_pkt_alloc_with_buffer(iface,
+					sizeof(struct net_ipv6_hdr) +
+					sizeof(struct net_icmp_hdr) + 2,
+					AF_INET6, IPPROTO_ICMPV6,
+					PKT_WAIT_TIME);
 	if (!pkt) {
 		return -ENOMEM;
 	}
@@ -782,10 +776,10 @@ int net_rpl_dis_send(struct in6_addr *dst, struct net_if *iface)
 	}
 
 	/* Add flags and reserved fields */
-	write_pkt(pkt, pkt->frags,
-		  sizeof(struct net_ipv6_hdr) + sizeof(struct net_icmp_hdr),
-		  &pos, u8, 0);
-	write_pkt(pkt, pkt->frags, pos, &pos, u8, 0);
+	net_pkt_write_u8(pkt, 0);
+	if (net_pkt_write_u8(pkt, 0)) {
+                goto drop;
+        }
 
 	ret = net_ipv6_finalize(pkt, IPPROTO_ICMPV6);
 	if (ret < 0) {
@@ -2807,9 +2801,7 @@ static void net_rpl_process_dio(struct net_if *iface,
 static enum net_verdict handle_dio(struct net_pkt *pkt)
 {
 	struct net_rpl_dio dio = { 0 };
-	struct net_buf *frag;
 	struct net_nbr *nbr;
-	u16_t offset, pos;
 	u8_t subopt_type;
 	u8_t flags, len, tmp;
 
@@ -2845,48 +2837,32 @@ static enum net_verdict handle_dio(struct net_pkt *pkt)
 		net_ipv6_nbr_set_reachable_timer(net_pkt_iface(pkt), nbr);
 	}
 
-	/* offset tells now where the ICMPv6 header is starting */
-	frag = net_frag_get_pos(pkt,
-				net_pkt_ip_hdr_len(pkt) +
-				net_pkt_ipv6_ext_len(pkt) +
-				sizeof(struct net_icmp_hdr),
-				&offset);
-
 	/* First the DIO option. */
-	frag = net_frag_read_u8(frag, offset, &pos, &dio.instance_id);
-	frag = net_frag_read_u8(frag, pos, &pos, &dio.version);
-	frag = net_frag_read_be16(frag, pos, &pos, &dio.rank);
-
-	frag = net_frag_read_u8(frag, pos, &pos, &flags);
+	net_pkt_read_u8(pkt, &dio.instance_id);
+	net_pkt_read_u8(pkt, &dio.version);
+	net_pkt_read_be16(pkt, &dio.rank);
+	net_pkt_read_u8(pkt, &flags);
 
 	dio.grounded = flags & NET_RPL_DIO_GROUNDED;
 	dio.mop = (flags & NET_RPL_DIO_MOP_MASK) >> NET_RPL_DIO_MOP_SHIFT;
 	dio.preference = flags & NET_RPL_DIO_PREFERENCE_MASK;
 
-	frag = net_frag_read_u8(frag, pos, &pos, &dio.dtsn);
+	net_pkt_read_u8(pkt, &dio.dtsn);
 
 	/* two reserved bytes */
-	frag = net_frag_skip(frag, pos, &pos, 2);
+	net_pkt_skip(pkt, 2);
 
-	frag = net_frag_read(frag, pos, &pos, sizeof(dio.dag_id),
-			     dio.dag_id.s6_addr);
+	net_pkt_read(pkt, dio.dag_id.s6_addr, sizeof(dio.dag_id));
 
 	/* Handle any DIO suboptions */
-	while (frag) {
+	while (!net_pkt_read_u8(pkt, &subopt_type)) {
 		len = 0U;
-		frag = net_frag_read_u8(frag, pos, &pos, &subopt_type);
-		if (!frag && pos == 0) {
-			/* We are at the end of the message */
-			break;
-		} else if (!frag && pos == 0xffff) {
-			NET_DBG("Invalid DIO packet");
-			net_stats_update_rpl_malformed_msgs(net_pkt_iface(pkt));
-			return NET_DROP;
-		}
+
+                /* TODO: deal with the malformed msgs */
 
 		if (subopt_type != NET_RPL_OPTION_PAD1) {
 			/* Suboption with a two-byte header + payload */
-			frag = net_frag_read_u8(frag, pos, &pos, &len);
+			net_pkt_read_u8(pkt, &len);
 			len += 2;
 		}
 
@@ -2896,7 +2872,7 @@ static enum net_verdict handle_dio(struct net_pkt *pkt)
 			break;
 		case NET_RPL_OPTION_PADN:
 			/* Skip padding bytes */
-			frag = net_frag_skip(frag, pos, &pos, len - 2);
+			net_pkg_skip(pkt, len - 2);
 			break;
 		case NET_RPL_OPTION_DAG_METRIC_CONTAINER:
 			if (len < 6) {
@@ -2906,25 +2882,21 @@ static enum net_verdict handle_dio(struct net_pkt *pkt)
 				goto out;
 			}
 
-			frag = net_frag_read_u8(frag, pos, &pos, &dio.mc.type);
-			frag = net_frag_read_u8(frag, pos, &pos, &tmp);
+			net_pkt_read_u8(pkt, &dio.mc.type);
+			net_pkt_read_u8(pkt, &tmp);
 			dio.mc.flags = tmp << 1;
-			frag = net_frag_read_u8(frag, pos, &pos, &tmp);
+			net_pkt_read_u8(pkt, &tmp);
 			dio.mc.flags |= tmp >> 7;
 			dio.mc.aggregated = (tmp >> 4) & 0x3;
 			dio.mc.precedence = tmp & 0xf;
-			frag = net_frag_read_u8(frag, pos, &pos,
-						&dio.mc.length);
+			net_pkt_read_u8(pkt, &dio.mc.length);
 
 			if (dio.mc.type == NET_RPL_MC_ETX) {
-				frag = net_frag_read_be16(frag, pos, &pos,
-							  &dio.mc.obj.etx);
+				net_pkt_read_be16(pkt, &dio.mc.obj.etx);
 
 			} else if (dio.mc.type == NET_RPL_MC_ENERGY) {
-				frag = net_frag_read_u8(frag, pos, &pos,
-						&dio.mc.obj.energy.flags);
-				frag = net_frag_read_u8(frag, pos, &pos,
-						&dio.mc.obj.energy.estimation);
+				net_pkt_read_u8(pkt, &dio.mc.obj.energy.flags);
+				net_pkt_read_u8(pkt, &dio.mc.obj.energy.estimation);
 			} else {
 				NET_DBG("Unhandled DAG MC type %d",
 					dio.mc.type);
@@ -2941,18 +2913,14 @@ static enum net_verdict handle_dio(struct net_pkt *pkt)
 				goto out;
 			}
 
-			frag = net_frag_read_u8(frag, pos, &pos,
-					&dio.destination_prefix.length);
-			frag = net_frag_read_u8(frag, pos, &pos,
-					&dio.destination_prefix.flags);
-			frag = net_frag_read_be32(frag, pos, &pos,
-					&dio.destination_prefix.lifetime);
+			net_pkt_read_u8(pkt, &dio.destination_prefix.length);
+			net_pkt_read_u8(pkt, &dio.destination_prefix.flags);
+			net_pkt_read_be32(pkt, &dio.destination_prefix.lifetime);
 
 			if (((dio.destination_prefix.length + 7) / 8) + 8 <=
 			    len && dio.destination_prefix.length <= 128) {
-				frag = net_frag_read(frag, pos, &pos,
-				       (dio.destination_prefix.length + 7) / 8,
-				       dio.destination_prefix.prefix.s6_addr);
+                          net_pkt_read(pkt, dio.destination_prefix.prefix.s6_addr,
+                                       (dio.destination_prefix.length + 7) / 8);
 			} else {
 				NET_DBG("Invalid route info option len %d",
 					len);
@@ -2972,28 +2940,20 @@ static enum net_verdict handle_dio(struct net_pkt *pkt)
 			}
 
 			/* Path control field not yet implemented (1 byte) */
-			frag = net_frag_skip(frag, pos, &pos, 1);
+			net_pkt_skip(pkt, 1);
 
-			frag = net_frag_read_u8(frag, pos, &pos,
-						&dio.dag_interval_doublings);
-			frag = net_frag_read_u8(frag, pos, &pos,
-						&dio.dag_interval_min);
-			frag = net_frag_read_u8(frag, pos, &pos,
-						&dio.dag_redundancy);
-			frag = net_frag_read_be16(frag, pos, &pos,
-						  &dio.max_rank_inc);
-			frag = net_frag_read_be16(frag, pos, &pos,
-						  &dio.min_hop_rank_inc);
-			frag = net_frag_read_be16(frag, pos, &pos,
-						  &dio.ocp);
+			net_pkt_read_u8(pkt, &dio.dag_interval_doublings);
+			net_pkt_read_u8(pkt, &dio.dag_interval_min);
+			net_pkt_read_u8(pkt, &dio.dag_redundancy);
+			net_pkt_read_be16(pkt, &dio.max_rank_inc);
+			net_pkt_read_be16(pkt, &dio.min_hop_rank_inc);
+			net_pkt_read_be16(pkt, &dio.ocp);
 
 			/* one reserved byte */
-			frag = net_frag_skip(frag, pos, &pos, 1);
+			net_pkt_skip(pkt, 1);
 
-			frag = net_frag_read_u8(frag, pos, &pos,
-						&dio.default_lifetime);
-			frag = net_frag_read_be16(frag, pos, &pos,
-						  &dio.lifetime_unit);
+			net_pkt_read_u8(pkt, &dio.default_lifetime);
+			net_pkt_read_be16(pkt, &dio.lifetime_unit);
 
 			break;
 		case NET_RPL_OPTION_PREFIX_INFO:
@@ -3005,37 +2965,30 @@ static enum net_verdict handle_dio(struct net_pkt *pkt)
 				goto out;
 			}
 
-			frag = net_frag_read_u8(frag, pos, &pos,
-						&dio.prefix_info.length);
-			frag = net_frag_read_u8(frag, pos, &pos,
-						&dio.prefix_info.flags);
+			net_pkt_read_u8(pkt, &dio.prefix_info.length);
+			net_pkt_read_u8(pkt, &dio.prefix_info.flags);
 
 			/* skip valid lifetime atm */
-			frag = net_frag_skip(frag, pos, &pos, 4);
+			net_pkt_skip(pkt, 4);
 
 			/* preferred lifetime stored in lifetime */
-			frag = net_frag_read_be32(frag, pos, &pos,
-						  &dio.prefix_info.lifetime);
+			net_pkt_read_be32(pkt, &dio.prefix_info.lifetime);
 
 			/* 32-bit reserved */
-			frag = net_frag_skip(frag, pos, &pos, 4);
+			net_pkt_skip(pkt, 4);
 
-			frag = net_frag_read(frag, pos, &pos,
-					     sizeof(struct in6_addr),
-					     dio.prefix_info.prefix.s6_addr);
+			net_pkt_read(pkt, dio.prefix_info.prefix.s6_addr,
+                                     sizeof(struct in6_addr));
 			break;
 		default:
 			NET_DBG("Unsupported suboption type in DIO %d",
 				subopt_type);
-			frag = net_frag_skip(frag, pos, &pos, len - 2);
+			net_pkt_skip(pkt, len - 2);
 			break;
 		}
 	}
 
-	if (pos == 0xffff && !frag) {
-		NET_DBG("DIO reading failure");
-		goto out;
-	}
+        /* TODO: to deal with malformed rpl message */ 
 
 	net_rpl_process_dio(net_pkt_iface(pkt), &NET_IPV6_HDR(pkt)->src, &dio);
 
@@ -3091,26 +3044,23 @@ int net_rpl_dao_send(struct net_if *iface,
 		return -EINVAL;
 	}
 
-	pkt = net_pkt_get_reserve_tx(BUF_TIMEOUT);
+        /* TODO: properly allocate the pkt data size */
+        pkt = net_pkt_alloc_with_buffer(iface,
+                                        ICMPV6_RPL_DAO_SIZE,
+                                        AF_INET6, IPPROTO_ICMPV6,
+                                        PKT_WAIT_TIME);
 	if (!pkt) {
 		return -ENOMEM;
 	}
 
-	if (!net_ipv6_create(pkt, src, dst, iface, IPPROTO_ICMPV6)) {
-		ret = -ENOMEM;
-		goto drop;
-	}
-
-	net_pkt_set_iface(pkt, iface);
-
-	ret = setup_icmpv6_hdr(pkt, NET_ICMPV6_RPL, NET_RPL_DEST_ADV_OBJ);
-	if (ret < 0) {
+        if (net_ipv6_create(pkt, src, dst) ||
+            net_icmpv6_create(pkt, NET_ICMPV6_RPL, NET_RPL_DEST_ADV_OBJ)) {
 		goto drop;
 	}
 
 	net_rpl_lollipop_increment(&rpl_dao_sequence);
 
-	append(pkt, u8, instance->instance_id);
+	net_pkt_write_u8(pkt, instance->instance_id);
 
 #if defined(CONFIG_NET_RPL_DAO_SPECIFY_DAG)
 	value |= NET_RPL_DAO_D_FLAG;
@@ -3119,34 +3069,32 @@ int net_rpl_dao_send(struct net_if *iface,
 #if defined(CONFIG_NET_RPL_DAO_ACK)
 	value |= NET_RPL_DAO_K_FLAG;
 #endif
-	append(pkt, u8, value);
-	append(pkt, u8, 0); /* reserved */
-	append(pkt, u8, rpl_dao_sequence);
+	net_pkt_write_u8(pkt, value);
+	net_pkt_write_u8(pkt, 0); /* reserved */
+	net_pkt_write_u8(pkt, rpl_dao_sequence);
 
 #if defined(CONFIG_NET_RPL_DAO_SPECIFY_DAG)
-	append_all(pkt, sizeof(dag->dag_id), dag->dag_id.s6_addr);
+	net_pkt_write(pkt, sizeof(dag->dag_id), dag->dag_id.s6_addr);
 #endif
 
 	prefixlen = sizeof(*prefix) * CHAR_BIT;
 	prefix_bytes = (prefixlen + 7) / CHAR_BIT;
 
-	append(pkt, u8, NET_RPL_OPTION_TARGET);
-	append(pkt, u8, 2 + prefix_bytes);
-	append(pkt, u8, 0); /* reserved */
-	append(pkt, u8, prefixlen);
-	append_all(pkt, prefix_bytes, prefix->s6_addr);
+	net_pkt_write_u8(pkt, NET_RPL_OPTION_TARGET);
+	net_pkt_write_u8(pkt, 2 + prefix_bytes);
+	net_pkt_write_u8(pkt, 0); /* reserved */
+	net_pkt_write_u8(pkt, prefixlen);
+	net_pkt_write(pkt, prefix_bytes, prefix->s6_addr);
 
-	append(pkt, u8, NET_RPL_OPTION_TRANSIT);
-	append(pkt, u8, 4); /* length */
-	append(pkt, u8, 0); /* flags */
-	append(pkt, u8, 0); /* path control */
-	append(pkt, u8, 0); /* path seq */
-	append(pkt, u8, lifetime);
+	net_pkt_write_u8(pkt, NET_RPL_OPTION_TRANSIT);
+	net_pkt_write_u8(pkt, 4); /* length */
+	net_pkt_write_u8(pkt, 0); /* flags */
+	net_pkt_write_u8(pkt, 0); /* path control */
+	net_pkt_write_u8(pkt, 0); /* path seq */
+	net_pkt_write_u8(pkt, lifetime);
 
-	ret = net_ipv6_finalize(pkt, IPPROTO_ICMPV6);
-	if (ret < 0) {
-		goto drop;
-	}
+        net_pkt_cursor_init(pkt);
+	net_ipv6_finalize(pkt, IPPROTO_ICMPV6);
 
 	ret = net_send_data(pkt);
 	if (ret >= 0) {
@@ -3188,20 +3136,12 @@ static inline int dao_forward(struct net_if *iface,
 	struct net_pkt *pkt;
 	int ret;
 
-	pkt = net_pkt_get_reserve_tx(BUF_TIMEOUT);
+	pkt = net_pkt_clone(orig, BUF_TIMEOUT);
 	if (!pkt) {
 		return -ENOMEM;
 	}
 
-	/* Steal the fragment chain */
-	pkt->frags = orig->frags;
-	orig->frags = NULL;
-
 	net_ipaddr_copy(&NET_IPV6_HDR(pkt)->dst, dst);
-
-	net_pkt_set_ip_hdr_len(pkt, sizeof(struct net_ipv6_hdr));
-	net_pkt_set_family(pkt, AF_INET6);
-	net_pkt_set_iface(pkt, iface);
 
 	net_icmpv6_set_chksum(pkt);
 
@@ -3343,11 +3283,8 @@ static enum net_verdict handle_dao(struct net_pkt *pkt)
 	struct net_rpl_instance *instance;
 	struct net_route_entry *route;
 	struct net_rpl_dag *dag;
-	struct net_buf *frag;
 	struct in6_addr addr;
 	struct net_nbr *ipv6_nbr, *rpl_nbr;
-	u16_t offset;
-	u16_t pos;
 	u8_t sequence;
 	u8_t instance_id;
 	u8_t lifetime;
@@ -3359,15 +3296,8 @@ static enum net_verdict handle_dao(struct net_pkt *pkt)
 
 	net_rpl_info(pkt, "Destination Advertisement Object");
 
-	/* offset tells now where the ICMPv6 header is starting */
-	frag = net_frag_get_pos(pkt,
-				net_pkt_ip_hdr_len(pkt) +
-				net_pkt_ipv6_ext_len(pkt) +
-				sizeof(struct net_icmp_hdr),
-				&offset);
-
-	frag = net_frag_read_u8(frag, offset, &pos, &instance_id);
-	if (!frag) {
+        /* TODO: confirm that the cursor is at the right position */
+	if (net_pkt_read_u8(pkt, &instance_id)) {
 		NET_DBG("Cannot get instance id");
 		return NET_DROP;
 	}
@@ -3381,16 +3311,15 @@ static enum net_verdict handle_dao(struct net_pkt *pkt)
 
 	lifetime = instance->default_lifetime;
 
-	frag = net_frag_read_u8(frag, pos, &pos, &flags);
-	frag = net_frag_skip(frag, pos, &pos, 1); /* reserved */
-	frag = net_frag_read_u8(frag, pos, &pos, &sequence);
+	net_pkt_read_u8(pkt, &flags);
+	net_pkt_skip(pkt, 1); /* reserved */
+	net_pkt_read_u8(pkt, &sequence);
 
 	dag = instance->current_dag;
 
 	/* Is the DAG ID present? */
 	if (flags & NET_RPL_DAO_D_FLAG) {
-		frag = net_frag_read(frag, pos, &pos, sizeof(addr),
-				     addr.s6_addr);
+		net_pkt_read(pkt, addr.s6_addr, sizeof(addr));
 
 		if (memcmp(&dag->dag_id, &addr, sizeof(dag->dag_id))) {
 			NET_DBG("Ignoring DAO for a DAG %s different from ours",
@@ -3435,22 +3364,14 @@ static enum net_verdict handle_dao(struct net_pkt *pkt)
 	target_len = 0U;
 
 	/* Handle any DAO suboptions */
-	while (frag) {
+	while (!net_pkt_read_u8(pkt, &subopt_type)) {
 		len = 0U;
-		frag = net_frag_read_u8(frag, pos, &pos, &subopt_type);
-		if (!frag && pos == 0) {
-			/* We are at the end of the message */
-			break;
-		} else if (!frag && pos == 0xffff) {
-			/* Read error */
-			NET_DBG("Invalid DAO packet");
-			net_stats_update_rpl_malformed_msgs(net_pkt_iface(pkt));
-			return NET_DROP;
-		}
+
+                /* TODO: to handle the malformed DAO message */
 
 		if (subopt_type != NET_RPL_OPTION_PAD1) {
 			/* Suboption with a two-byte header + payload */
-			frag = net_frag_read_u8(frag, pos, &pos, &len);
+			net_pkt_read_u8(pkt, &len);
 			len += 2;
 		}
 
@@ -3460,23 +3381,21 @@ static enum net_verdict handle_dao(struct net_pkt *pkt)
 			break;
 		case NET_RPL_OPTION_PADN:
 			/* Skip padding bytes */
-			frag = net_frag_skip(frag, pos, &pos, len - 2);
+			net_pkt_skip(pkt, len - 2);
 			break;
 		case NET_RPL_OPTION_TARGET:
-			frag = net_frag_skip(frag, pos, &pos, 1); /* reserved */
-			frag = net_frag_read_u8(frag, pos, &pos, &target_len);
-			frag = net_frag_read(frag, pos, &pos,
-					     (target_len + 7) / 8,
-					     addr.s6_addr);
+			net_pkt_skip(pkt, 1); /* reserved */
+			net_pkt_read_u8(pkt, &target_len);
+			net_pkt_read(pkt, addr.s6_addr, (target_len + 7) / 8);
 			break;
 		case NET_RPL_OPTION_TRANSIT:
 			/* The flags, path sequence and control are ignored. */
-			frag = net_frag_skip(frag, pos, &pos, 3);
-			frag = net_frag_read_u8(frag, pos, &pos, &lifetime);
+			net_pkt_skip(pkt, 3);
+                        net_pkt_read_u8(pkt, &lifetime);
 			break;
 		default:
 			/* Skip unknown sub options */
-			frag = net_frag_skip(frag, pos, &pos, len - 2);
+			net_pkt_skip(pkt, len - 2);
 			break;
 		}
 	}
@@ -3673,24 +3592,15 @@ end:
 static enum net_verdict handle_dao_ack(struct net_pkt *pkt)
 {
 	struct net_rpl_instance *instance;
-	struct net_buf *frag;
-	u16_t offset;
-	u16_t pos;
 	u8_t instance_id;
 	u8_t sequence;
 	u8_t status;
 
 	net_rpl_info(pkt, "Destination Advertisement Object Ack");
 
-	/* offset tells now where the ICMPv6 header is starting */
-	frag = net_frag_get_pos(pkt,
-				net_pkt_ip_hdr_len(pkt) +
-				net_pkt_ipv6_ext_len(pkt) +
-				sizeof(struct net_icmp_hdr),
-				&offset);
 
-	frag = net_frag_read_u8(frag, offset, &pos, &instance_id);
-	if (!frag && pos == 0xffff) {
+        /* TODO: to confirm that the cursor is at the right position already */
+	if (net_pkt_read_u8(pkt, &instance_id)) {
 		/* Read error */
 		return NET_DROP;
 	}
@@ -3703,10 +3613,9 @@ static enum net_verdict handle_dao_ack(struct net_pkt *pkt)
 	}
 
 	/* Skip reserved byte */
-	frag = net_frag_skip(frag, pos, &pos, 1);
-	frag = net_frag_read_u8(frag, pos, &pos, &sequence);
-	frag = net_frag_read_u8(frag, pos, &pos, &status);
-	if (!frag && pos == 0xffff) {
+	net_pkt_skip(pkt, 1);
+	net_pkt_read_u8(pkt, &sequence);
+        if (net_pkt_read_u8(pkt, &status) {
 		return NET_DROP;
 	}
 
@@ -3766,28 +3675,23 @@ static struct net_icmpv6_handler dao_ack_handler = {
 
 int net_rpl_update_header(struct net_pkt *pkt, struct in6_addr *addr)
 {
-	u16_t pos = 0U;
 	struct net_rpl_parent *parent;
-	struct net_buf *frag;
 	u16_t sender_rank;
-	u16_t offset;
 	u8_t opt;
 	u8_t len;
 	int ret;
+        struct net_pkt_cursor backup;
 
 	if (NET_IPV6_HDR(pkt)->nexthdr != NET_IPV6_NEXTHDR_HBHO) {
 		return 0;
 	}
 
-	frag = pkt->frags;
+        net_pkt_cursor_init(pkt);
+        net_pkt_skip(pkt, sizeof(struct net_ipv6_hdr) + 1);
 
-	/* The HBHO will start right after IPv6 header also skip
-	 * next header.
-	 */
-	pos = sizeof(struct net_ipv6_hdr) + 1;
-	frag = net_frag_read(frag, pos, &pos, 1, &len); /* HBH length */
-	frag = net_frag_read(frag, pos, &pos, 1, &opt); /* Opt type */
-	if (!frag && pos) {
+	net_pkt_read_u8(pkt, &len); /* HBH length */
+	/* Opt type */
+	if (net_pkt_read_u8(pkt, &opt)) {
 		/* Not enough data in the message */
 		return -EMSGSIZE;
 	}
@@ -3802,18 +3706,21 @@ int net_rpl_update_header(struct net_pkt *pkt, struct in6_addr *addr)
 		return 0;
 	}
 
-	frag = net_frag_skip(frag, pos, &pos, 1); /* opt len */
+	net_pkt_skip(pkt, 1); /* opt len */
 
 	/* Where the flags is located in the packet, that info is
 	 * need few lines below.
 	 */
-	offset = pos;
-	frag = net_frag_skip(frag, pos, &pos, 1); /* flags */
-	frag = net_frag_skip(frag, pos, &pos, 1); /* instance */
-	frag = net_frag_read(frag, pos, &pos, 2, (u8_t *)&sender_rank);
-	if (!frag && pos) {
+        net_pkt_cursor_backup(pkt, &backup);
+
+	net_pkt_skip(pkt, 1); /* flags */
+	net_pkt_skip(pkt, 1); /* instance */
+	if (net_pkt_read(pkt, 2, (u8_t *)&sender_rank)) {
 		return -EMSGSIZE;
 	}
+
+        net_pkt_set_overwrite(pkt, true);
+        net_pkt_cursor_restore(pkt, &backup);
 
 	if (sender_rank != 0) {
 		return 0;
@@ -3830,17 +3737,11 @@ int net_rpl_update_header(struct net_pkt *pkt, struct in6_addr *addr)
 	parent = find_parent(net_pkt_iface(pkt),
 			     rpl_default_instance->current_dag, addr);
 	if (!parent || parent != parent->dag->preferred_parent) {
-		write_pkt(pkt, pkt->frags, offset, &pos, u8,
-			  NET_RPL_HDR_OPT_DOWN);
+		net_pkt_write_u8(pkt, NET_RPL_HDR_OPT_DOWN);
 	}
 
-	offset++;
-
-	write_pkt(pkt, pkt->frags, offset, &pos, u8,
-		  rpl_default_instance->instance_id);
-
-	write_pkt(pkt, pkt->frags, pos, &pos, be16,
-		  rpl_default_instance->current_dag->rank);
+	net_pkt_write_u8(pkt, rpl_default_instance->instance_id);
+	net_pkt_write_be16(pkt, rpl_default_instance->current_dag->rank);
 
 	return 0;
 
@@ -3848,29 +3749,23 @@ drop:
 	return ret;
 }
 
-struct net_buf *net_rpl_verify_header(struct net_pkt *pkt, struct net_buf *frag,
-				      u16_t offset, u16_t *pos,
-				      bool *result)
+bool net_rpl_verify_header(struct net_pkt *pkt)
 {
 	struct net_rpl_instance *instance;
 	u16_t sender_rank;
 	u8_t instance_id, flags;
 	bool down, sender_closer;
 
-	frag = net_frag_read_u8(frag, offset, pos, &flags);
-	frag = net_frag_read_u8(frag, *pos, pos, &instance_id);
-	frag = net_frag_read_be16(frag, *pos, pos, &sender_rank);
-
-	if (!frag && *pos == 0xffff) {
-		*result = false;
-		return frag;
-	}
+	net_pkt_read_u8(pkt, &flags);
+	net_pkt_read_u8(pkt, &instance_id);
+	if (net_pkt_read_be16(pkt, &sender_rank)) {
+          return false;
+        };
 
 	instance = net_rpl_get_instance(instance_id);
 	if (!instance) {
 		NET_DBG("Unknown instance %u", instance_id);
-		*result = false;
-		return frag;
+		return false;
 	}
 
 	if (flags & NET_RPL_HDR_OPT_FWD_ERR) {
@@ -3895,14 +3790,12 @@ struct net_buf *net_rpl_verify_header(struct net_pkt *pkt, struct net_buf *frag,
 		net_rpl_reset_dio_timer(instance);
 
 		/* drop the packet as it is not routable */
-		*result = false;
-		return frag;
+		return false;
 	}
 
 	if (!net_rpl_dag_is_joined(instance->current_dag)) {
 		NET_DBG("No DAG in the instance");
-		*result = false;
-		return frag;
+		return false;
 	}
 
 	if (flags & NET_RPL_HDR_OPT_DOWN) {
@@ -3933,270 +3826,52 @@ struct net_buf *net_rpl_verify_header(struct net_pkt *pkt, struct net_buf *frag,
 			 */
 			net_rpl_reset_dio_timer(instance);
 
-			*result = false;
-			return frag;
+			return false;
 		}
 
 		NET_DBG("Single error tolerated.");
 		net_stats_update_rpl_loop_warnings(net_pkt_iface(pkt));
 
 		/* FIXME: Handle (NET_RPL_HDR_OPT_RANK_ERR) errors properly */
-		*result = true;
-		return frag;
+		return true;
 	}
 
 	NET_DBG("Rank OK");
 
-	*result = true;
-	return frag;
+	return true;
 }
 
-static inline int add_rpl_opt(struct net_pkt *pkt, u16_t offset)
+static inline int add_rpl_opt(struct net_pkt *pkt)
 {
 	int ext_len = net_pkt_ipv6_ext_len(pkt);
 	bool ret;
 
-	/* next header */
-	net_pkt_set_ipv6_hdr_prev(pkt, offset);
-
-	ret = net_pkt_insert_u8_timeout(pkt, pkt->frags, offset++,
-					NET_IPV6_HDR(pkt)->nexthdr,
-					BUF_TIMEOUT);
-	if (!ret) {
-		return -EINVAL;
-	}
-
-	/* Option len */
-	ret = net_pkt_insert_u8_timeout(pkt, pkt->frags, offset++,
-					NET_RPL_HOP_BY_HOP_LEN - 8,
-					BUF_TIMEOUT);
-	if (!ret) {
-		return -EINVAL;
-	}
-
-	/* Sub-option type */
-	ret = net_pkt_insert_u8_timeout(pkt, pkt->frags, offset++,
-					NET_IPV6_EXT_HDR_OPT_RPL,
-					BUF_TIMEOUT);
-	if (!ret) {
-		return -EINVAL;
-	}
-
-	/* Sub-option length */
-	ret = net_pkt_insert_u8_timeout(pkt, pkt->frags, offset++,
-					NET_RPL_HDR_OPT_LEN,
-					BUF_TIMEOUT);
-	if (!ret) {
-		return -EINVAL;
-	}
-
-	/* RPL option flags */
-	ret = net_pkt_insert_u8_timeout(pkt, pkt->frags, offset++, 0,
-					BUF_TIMEOUT);
-	if (!ret) {
-		return -EINVAL;
-	}
-
-	/* RPL Instance id */
-	ret = net_pkt_insert_u8_timeout(pkt, pkt->frags, offset++, 0,
-					BUF_TIMEOUT);
-	if (!ret) {
-		return -EINVAL;
-	}
-
-	/* RPL sender rank */
-	ret = net_pkt_insert_be16_timeout(pkt, pkt->frags, offset++, 0,
-					  BUF_TIMEOUT);
-	if (!ret) {
-		return -EINVAL;
-	}
-
-	NET_IPV6_HDR(pkt)->nexthdr = NET_IPV6_NEXTHDR_HBHO;
-
-	net_pkt_set_ipv6_ext_len(pkt, ext_len + NET_RPL_HOP_BY_HOP_LEN);
-
 	return 0;
 }
 
-static int net_rpl_update_header_empty(struct net_pkt *pkt)
-{
-	u16_t offset = sizeof(struct net_ipv6_hdr);
-	u8_t next = NET_IPV6_HDR(pkt)->nexthdr;
-	struct net_buf *frag = pkt->frags;
-	struct net_rpl_instance *instance;
-	struct net_rpl_parent *parent;
-	struct net_route_entry *route;
-	u8_t next_hdr, len, length;
-	u8_t opt_type = 0U, opt_len;
-	u8_t instance_id, flags;
-	u16_t pos;
-	int ret;
-
-	NET_DBG("Verifying the presence of the RPL header option");
-
-	if (next != NET_IPV6_NEXTHDR_HBHO) {
-		NET_DBG("No hop-by-hop option found, creating it");
-
-		if (add_rpl_opt(pkt, offset) < 0) {
-			NET_DBG("Cannot add RPL options");
-			return -EINVAL;
-		}
-
-		return 0;
-	}
-
-	net_pkt_set_ipv6_hdr_prev(pkt, offset);
-
-	frag = net_frag_read_u8(frag, offset, &offset, &next_hdr);
-	frag = net_frag_read_u8(frag, offset, &offset, &len);
-	if (!frag) {
-		return 0;
-	}
-
-	length = 0U;
-
-	if (len != NET_RPL_HOP_BY_HOP_LEN - 8) {
-		NET_DBG("Hop-by-hop ext header is wrong size "
-			"(%d vs %d)", length,
-			NET_RPL_HOP_BY_HOP_LEN - 8);
-
-		return 0;
-	}
-
-	length += 2;
-
-	/* Each extension option has type and length */
-	frag = net_frag_read_u8(frag, offset, &offset, &opt_type);
-	frag = net_frag_read_u8(frag, offset, &offset, &opt_len);
-
-	if (opt_type != NET_IPV6_EXT_HDR_OPT_RPL) {
-		/* FIXME: go through all the options instead */
-		NET_DBG("Non RPL Hop-by-hop option check not "
-			"implemented");
-		return 0;
-	}
-
-	if (opt_len != NET_RPL_HDR_OPT_LEN) {
-		NET_DBG("RPL Hop-by-hop option has wrong length");
-		return 0;
-	}
-
-	frag = net_frag_read_u8(pkt->frags, offset, &offset, &flags);
-	frag = net_frag_read_u8(frag, offset, &offset, &instance_id);
-
-	instance = net_rpl_get_instance(instance_id);
-	if (!instance || !instance->is_used ||
-	    !instance->current_dag->is_joined) {
-		NET_DBG("Incorrect instance so hop-by-hop ext header "
-			"not added");
-		return 0;
-	}
-
-	NET_DBG("Updating RPL option");
-
-	/* The offset should point to "rank" right now */
-	write_pkt(pkt, frag, offset, &pos, be16, instance->current_dag->rank);
-
-	offset -= 2; /* move back to flags */
-
-	route = net_route_lookup(net_pkt_iface(pkt), &NET_IPV6_HDR(pkt)->dst);
-
-	/*
-	 * Check the direction of the down flag, as per
-	 * Section 11.2.2.3, which states that if a packet is going
-	 * down it should in general not go back up again. If this
-	 * happens, a NET_RPL_HDR_OPT_FWD_ERR should be flagged.
-	 */
-	if (flags & NET_RPL_HDR_OPT_DOWN) {
-		struct net_nbr *nbr;
-
-		if (!route) {
-			write_pkt(pkt, frag, offset, &pos, u8,
-				  flags |= NET_RPL_HDR_OPT_FWD_ERR);
-
-			NET_DBG("RPL forwarding error");
-
-			/*
-			 * We should send back the packet to the
-			 * originating parent, but it is not feasible
-			 * yet, so we send a No-Path DAO instead.
-			 */
-			NET_DBG("RPL generate No-Path DAO");
-
-			nbr = net_nbr_lookup(&net_rpl_parents.table,
-					     net_pkt_iface(pkt),
-					     net_pkt_lladdr_src(pkt));
-
-			parent = nbr_data(nbr);
-			if (parent) {
-				net_rpl_dao_send(net_pkt_iface(pkt),
-						 parent,
-						 &NET_IPV6_HDR(pkt)->dst,
-						 NET_RPL_ZERO_LIFETIME);
-			}
-
-			/* Drop packet */
-			return -EINVAL;
-		}
-
-		return 0;
-	}
-
-	/*
-	 * Set the down extension flag correctly as described
-	 * in Section 11.2 of RFC6550. If the packet progresses
-	 * along a DAO route, the down flag should be set.
-	 */
-
-	if (!route) {
-		/* No route was found, so this packet will go
-		 * towards the RPL root. If so, we should not
-		 * set the down flag.
-		 */
-		write_pkt(pkt, frag, offset, &pos, u8,
-			  flags &= ~NET_RPL_HDR_OPT_DOWN);
-
-		NET_DBG("RPL option going up");
-	} else {
-		/* A DAO route was found so we set the down
-		 * flag.
-		 */
-		write_pkt(pkt, frag, offset, &pos, u8,
-			  flags |= NET_RPL_HDR_OPT_DOWN);
-
-		NET_DBG("RPL option going down");
-	}
-
-	return 0;
-
-drop:
-	return ret;
-}
-
-int net_rpl_revert_header(struct net_pkt *pkt, u16_t offset, u16_t *pos)
+int net_rpl_revert_header(struct net_pkt *pkt)
 {
 	struct net_rpl_instance *instance;
-	struct net_buf *frag;
 	u16_t sender_rank;
-	u16_t revert_pos;
 	u8_t instance_id;
 	u8_t opt_len;
 	u8_t flags;
 	u8_t opt;
+	struct net_pkt_cursor revert_cursor;
 
 	/* Skip HBHO next header and length */
-	frag = net_frag_skip(pkt->frags, offset, pos, 2);
-	frag = net_frag_read_u8(frag, *pos, pos, &opt);
-	frag = net_frag_read_u8(frag, *pos, pos, &opt_len);
+	net_pkt_skip(pkt, 2);
+	net_pkt_read_u8(pkt, &opt);
+	net_pkt_read_u8(pkt, &opt_len);
 
 	if (opt != NET_IPV6_EXT_HDR_OPT_RPL) {
 		return -EINVAL;
 	}
 
-	revert_pos = *pos;
-	frag = net_frag_read_u8(frag, *pos, pos, &flags);
-	frag = net_frag_read_u8(frag, *pos, pos, &instance_id);
-	if (!frag && *pos == 0xffff) {
+	net_pkt_cursor_backup(pkt, &revert_cursor);
+
+	net_pkt_read_u8(pkt, &flags);
+	if (net_pkt_read_u8(pkt, &instance_id)) {
 		return -EINVAL;
 	}
 
@@ -4216,36 +3891,62 @@ int net_rpl_revert_header(struct net_pkt *pkt, u16_t offset, u16_t *pos)
 
 	sender_rank = instance->current_dag->rank;
 
-	/* Reverting RPL options from 'revert_pos' */
-	*pos = revert_pos;
+	/* Reverting RPL options from 'revert_cursor' */
+	net_pkt_cursor_restore(pkt, &revert_cursor);
+	net_pkt_set_overwrite(pkt, true);
 
-	/* Update flags, instance id, sender rank */
-	frag = net_pkt_write_u8_timeout(pkt, frag, *pos, pos, flags,
-					BUF_TIMEOUT);
-	frag = net_pkt_write_u8_timeout(pkt, frag, *pos, pos, instance_id,
-					BUF_TIMEOUT);
-	frag = net_pkt_write_be16_timeout(pkt, frag, *pos, pos, sender_rank,
-					  BUF_TIMEOUT);
-	if (!frag) {
-		if (*pos == 0xffff) {
-			return -EINVAL;
-		} else {
-			return -ENOMEM;
-		}
-	}
+	net_pkt_write_u8(pkt, flags);
+	net_pkt_write_u8(pkt, instance_id);
+	net_pkt_write_be16(pkt, sender_rank);
 
 	return 0;
 }
 
-int net_rpl_insert_header(struct net_pkt *pkt)
+int net_rpl_add_rpl_option(struct net_pkt *pkt)
 {
 #if defined(CONFIG_NET_RPL_INSERT_HBH_OPTION)
-	if (rpl_default_instance &&
-	    !net_ipv6_is_addr_mcast(&NET_IPV6_HDR(pkt)->dst)) {
-		return net_rpl_update_header_empty(pkt);
+	if (!rpl_default_instance ||
+	    net_ipv6_is_addr_mcast(&NET_IPV6_HDR(pkt)->dst)) {
+		return 0;
+	}
+
+	NET_DBG("Add RPL header option");
+
+        /* leave the next header to finalize */
+	ret = net_pkt_write_u8(pkt, 255);
+	/* Option len */
+	if (net_pkt_write_u8(pkt, NET_RPL_HOP_BY_HOP_LEN - 8)) {
+		return -EINVAL;
+	}
+
+	/* Sub-option type */
+	if (net_pkt_write_u8(pkt, NET_IPV6_EXT_HDR_OPT_RPL)) {
+		return -EINVAL;
+	}
+	/* Sub-option length */
+	if (net_pkt_write_u8(pkt, NET_RPL_HDR_OPT_LEN)) {
+		return -EINVAL;
+	}
+
+	NET_IPV6_HDR(pkt)->nexthdr = NET_IPV6_NEXTHDR_HBHO;
+	net_pkt_set_ipv6_ext_len(pkt, ext_len + NET_RPL_HOP_BY_HOP_LEN);
+
+	/* leave net_rpl_update_header() update the proper content */
+	/* RPL option flags */
+        if (net_pkt_write_u8(pkt, 0)) {
+		return -EINVAL;
+	}
+
+	/* RPL Instance id */
+	if (net_pkt_write_u8(pkt, 0)) {
+		return -EINVAL;
+	}
+
+	/* RPL sender rank */
+	if (net_pkt_write_be16(pkt, 0)) {
+		return -EINVAL;
 	}
 #endif
-
 	return 0;
 }
 

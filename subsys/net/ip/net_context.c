@@ -1131,7 +1131,8 @@ static int context_setup_udp_packet(struct net_context *context,
 
 		ret = net_context_create_ipv6_new(context, pkt,
 						  NULL, &addr6->sin6_addr);
-	} else if (IS_ENABLED(CONFIG_NET_IPV4) &&
+
+        } else if (IS_ENABLED(CONFIG_NET_IPV4) &&
 		   net_context_get_family(context) == AF_INET) {
 		struct sockaddr_in *addr4 = (struct sockaddr_in *)dst_addr;
 
@@ -1149,6 +1150,17 @@ static int context_setup_udp_packet(struct net_context *context,
 	if (ret) {
 		return ret;
 	}
+
+#if defined(CONFIG_NET_UDP) && defined(CONFIG_NET_RPL_INSERT_HBH_OPTION)
+	if (IS_ENABLED(CONFIG_NET_IPV6) &&
+	    net_context_get_family(context) == AF_INET6) {
+		/* Check if we need to add RPL header to sent UDP packet. */
+		if (net_rpl_add_rpl_option(pkt) < 0) {
+			NET_DBG("RPL HBHO insert failed");
+			return -EINVAL;
+		}
+	}
+#endif
 
 	ret = net_udp_create(pkt,
 			     net_sin((struct sockaddr *)

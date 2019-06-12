@@ -977,10 +977,7 @@ __deprecated int net_rpl_update_header(struct net_pkt *pkt,
  *
  * @return frag Returns the fragment where this call finished reading.
  */
-__deprecated struct net_buf *net_rpl_verify_header(struct net_pkt *pkt,
-						   struct net_buf *frag,
-						   u16_t offset, u16_t *pos,
-						   bool *result);
+__deprecated bool *net_rpl_verify_header(struct net_pkt *pkt);
 
 /**
  * @brief Insert RPL extension header to IPv6 packet.
@@ -989,7 +986,7 @@ __deprecated struct net_buf *net_rpl_verify_header(struct net_pkt *pkt,
  *
  * @return 0 if ok, <0 if error.
  */
-__deprecated int net_rpl_insert_header(struct net_pkt *pkt);
+__deprecated int net_rpl_add_rpl_option(struct net_pkt *pkt)
 
 /**
  * @brief Revert RPL extension header to IPv6 packet.
