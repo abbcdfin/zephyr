@@ -1339,7 +1339,7 @@ struct in6_addr *net_if_ipv6_get_ll(struct net_if *iface,
  *
  * @return Pointer to IPv6 address, NULL if not found.
  */
-struct in6_addr *net_if_ipv6_get_ll_addr(enum neot_addr_state state,
+struct in6_addr *net_if_ipv6_get_ll_addr(enum net_addr_state state,
 					 struct net_if **iface);
 
 /**

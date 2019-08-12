@@ -838,10 +838,10 @@ ignore_frag_error:
 		/* Update RPL header */
 		if (net_rpl_update_header(pkt, &NET_IPV6_HDR(pkt)->dst) < 0) {
 			net_pkt_unref(pkt);
-			return NULL;
+			return NET_DROP;
 		}
 
-		return pkt;
+		return NET_OK;
 	}
 
 	/* If the IPv6 destination address is not link local, then try to get
@@ -872,10 +872,10 @@ ignore_frag_error:
 		/* Update RPL header */
 		if (net_rpl_update_header(pkt, &NET_IPV6_HDR(pkt)->dst) < 0) {
 			net_pkt_unref(pkt);
-			return NULL;
+			return NET_DROP;
 		}
 
-		return pkt;
+		return NET_OK;
 	}
 
 	if (net_if_ipv6_addr_onlink(&iface, &ip_hdr->dst)) {
@@ -915,7 +915,7 @@ ignore_frag_error:
 try_send:
 	if (net_rpl_update_header(pkt, nexthop) < 0) {
 		net_pkt_unref(pkt);
-		return NULL;
+		return NET_DROP;
 	}
 
 	nbr = nbr_lookup(&net_neighbor.table, iface, nexthop);

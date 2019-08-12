@@ -244,7 +244,7 @@ static inline int ipv6_handle_ext_hdr_options(struct net_pkt *pkt,
                         };
 
                         length += opt_len + 2;
-			return frag;
+			break;
 #endif
 		default:
 			if (ipv6_drop_on_unknown_option(pkt, hdr,
