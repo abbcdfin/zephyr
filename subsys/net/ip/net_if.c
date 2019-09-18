@@ -237,7 +237,6 @@ enum net_verdict net_if_send_data(struct net_if *iface, struct net_pkt *pkt)
 	struct net_linkaddr *dst = net_pkt_lladdr_dst(pkt);
 	enum net_verdict verdict = NET_OK;
 	int status = -EIO;
-
 	if (!net_if_flag_is_set(iface, NET_IF_UP)) {
 		/* Drop packet if interface is not up */
 		NET_WARN("iface %p is down", iface);
@@ -1897,12 +1896,10 @@ static inline struct in6_addr *check_global_addr(struct net_if *iface,
 		    ipv6->unicast[i].address.family != AF_INET6) {
 			continue;
 		}
-
 		if (!net_ipv6_is_ll_addr(&ipv6->unicast[i].address.in6_addr)) {
 			return &ipv6->unicast[i].address.in6_addr;
 		}
 	}
-
 	return NULL;
 }
 #endif

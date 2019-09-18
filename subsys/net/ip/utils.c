@@ -492,7 +492,6 @@ u16_t net_calc_chksum(struct net_pkt *pkt, u8_t proto)
 
 	net_pkt_cursor_backup(pkt, &backup);
 	net_pkt_cursor_init(pkt);
-
 	ow = net_pkt_is_being_overwritten(pkt);
 	net_pkt_set_overwrite(pkt, true);
 

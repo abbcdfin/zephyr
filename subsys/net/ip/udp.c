@@ -147,16 +147,18 @@ struct net_udp_hdr *net_udp_input(struct net_pkt *pkt,
 				  struct net_pkt_data_access *udp_access)
 {
 	struct net_udp_hdr *udp_hdr;
-
+	/*printk("get in udp\n");*/
 	if (IS_ENABLED(CONFIG_NET_UDP_CHECKSUM) &&
 	    net_if_need_calc_rx_checksum(net_pkt_iface(pkt)) &&
 	    net_calc_chksum_udp(pkt) != 0U) {
+		printk("DROP: checksum mismatch\n");
 		NET_DBG("DROP: checksum mismatch");
 		goto drop;
 	}
 
 	udp_hdr = (struct net_udp_hdr *)net_pkt_get_data(pkt, udp_access);
 	if (!udp_hdr || net_pkt_set_data(pkt, udp_access)) {
+		printk("DROP: corrupted header\n");
 		NET_DBG("DROP: corrupted header");
 		goto drop;
 	}

@@ -61,7 +61,6 @@ static bool received_dest_addr_matched(u8_t *rx_buffer)
 		   BROADCAST_ADDRESS, PAN_ID_SIZE) != 0) {
 		return false;
 	}
-
 	/* Check destination address */
 	switch (rx_buffer[DEST_ADDR_TYPE_OFFSET] & DEST_ADDR_TYPE_MASK) {
 	case DEST_ADDR_TYPE_SHORT:
@@ -75,6 +74,7 @@ static bool received_dest_addr_matched(u8_t *rx_buffer)
 		     memcmp(&rx_buffer[DEST_ADDR_OFFSET],
 			    dev_short_addr,
 			    SHORT_ADDRESS_SIZE) != 0)) {
+			   printk("check dest addr type short fail\n");
 			return false;
 		}
 	break;
@@ -85,6 +85,7 @@ static bool received_dest_addr_matched(u8_t *rx_buffer)
 		    EXTENDED_ADDRESS_SIZE ||
 		    memcmp(&rx_buffer[DEST_ADDR_OFFSET],
 			   dev_ext_addr, EXTENDED_ADDRESS_SIZE) != 0) {
+			printk("check dest addr type extended fail\n");
 			return false;
 		}
 		break;
@@ -92,7 +93,6 @@ static bool received_dest_addr_matched(u8_t *rx_buffer)
 	default:
 		return false;
 	}
-
 	return true;
 }
 
@@ -102,7 +102,6 @@ static u8_t *upipe_rx(u8_t *buf, size_t *off)
 {
 	struct net_pkt *pkt = NULL;
 	struct upipe_context *upipe;
-
 	if (!upipe_dev) {
 		goto done;
 	}
@@ -144,6 +143,10 @@ static u8_t *upipe_rx(u8_t *buf, size_t *off)
 		memcpy(frag->data, upipe->rx_buf, upipe->rx_len);
 		net_buf_add(frag, upipe->rx_len);
 
+		for (int i = 0; i < 100; i++) {
+			printk("%x ", *(&frag->data[0]+i));
+		}
+		printk("\033[1;36m pipe res \033[0m\n");
 #if defined(CONFIG_IEEE802154_UPIPE_HW_FILTER)
 		if (received_dest_addr_matched(frag->data) == false) {
 			LOG_DBG("Packet received is not addressed to me");
@@ -286,10 +289,12 @@ static int upipe_tx(struct device *dev,
 	data = len;
 	uart_pipe_send(&data, 1);
 
+	printk("\033[1;33m pipe send \033[0m\n");
 	for (i = 0U; i < len; i++) {
+		printk("%x ", *(pkt_buf+i));
 		uart_pipe_send(pkt_buf+i, 1);
 	}
-
+	printk("\n");
 	return 0;
 }
 

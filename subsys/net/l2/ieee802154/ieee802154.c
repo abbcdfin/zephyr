@@ -130,6 +130,7 @@ enum net_verdict ieee802154_manage_recv_packet(struct net_if *iface,
 	/* Upper IP stack expects the link layer address to be in
 	 * big endian format so we must swap it here.
 	 */
+
 	if (net_pkt_lladdr_src(pkt)->addr &&
 	    net_pkt_lladdr_src(pkt)->len == IEEE802154_EXT_ADDR_LENGTH) {
 		sys_mem_swap(net_pkt_lladdr_src(pkt)->addr,
@@ -140,8 +141,8 @@ enum net_verdict ieee802154_manage_recv_packet(struct net_if *iface,
 	    net_pkt_lladdr_dst(pkt)->len == IEEE802154_EXT_ADDR_LENGTH) {
 		sys_mem_swap(net_pkt_lladdr_dst(pkt)->addr,
 			     net_pkt_lladdr_dst(pkt)->len);
-	}
 
+	}
 	/** Uncompress will drop the current fragment. Pkt ll src/dst address
 	 * will then be wrong and must be updated according to the new fragment.
 	 */
@@ -151,7 +152,6 @@ enum net_verdict ieee802154_manage_recv_packet(struct net_if *iface,
 	dst = net_pkt_lladdr_dst(pkt)->addr ?
 		net_pkt_lladdr_dst(pkt)->addr -
 		(net_pkt_data(pkt) - hdr_len) : 0;
-
 #ifdef CONFIG_NET_L2_IEEE802154_FRAGMENT
 	verdict = ieee802154_reassemble(pkt);
 	if (verdict != NET_CONTINUE) {
@@ -164,11 +164,11 @@ enum net_verdict ieee802154_manage_recv_packet(struct net_if *iface,
 		goto out;
 	}
 #endif
+
 	net_pkt_lladdr_src(pkt)->addr = src ?
 		(net_pkt_data(pkt) - hdr_len) + src : NULL;
 	net_pkt_lladdr_dst(pkt)->addr = dst ?
 		(net_pkt_data(pkt) - hdr_len) + dst : NULL;
-
 	pkt_hexdump(RX_PKT_TITLE, pkt, true);
 out:
 	return verdict;
@@ -232,27 +232,30 @@ static int ieee802154_send(struct net_if *iface, struct net_pkt *pkt)
 	u8_t ll_hdr_size;
 	bool fragment;
 	int len;
-
 	if (net_pkt_family(pkt) != AF_INET6) {
 		return -EINVAL;
 	}
 
 	ll_hdr_size = ieee802154_compute_header_size(iface,
 						     &NET_IPV6_HDR(pkt)->dst);
-
 	/* len will hold the hdr size difference on success */
+
 	len = net_6lo_compress(pkt, true);
 	if (len < 0) {
 		return len;
 	}
 
+	if (net_pkt_lladdr_dst(pkt) &&
+		ll_hdr_size == sizeof(struct ieee802154_fcf_seq)+
+					IEEE802154_PAN_ID_LENGTH +
+					IEEE802154_EXT_ADDR_LENGTH){
+		ll_hdr_size = ll_hdr_size + IEEE802154_EXT_ADDR_LENGTH;
+	}
 	fragment = ieee802154_fragment_is_needed(pkt, ll_hdr_size);
 	ieee802154_fragment_ctx_init(&f_ctx, pkt, len, true);
-
 	len = 0;
 	frame_buf.len = 0U;
 	buf = pkt->buffer;
-
 	while (buf) {
 		int ret;
 
@@ -272,7 +275,6 @@ static int ieee802154_send(struct net_if *iface, struct net_pkt *pkt)
 						  &frame_buf, ll_hdr_size)) {
 			return -EINVAL;
 		}
-
 		if (IS_ENABLED(CONFIG_NET_L2_IEEE802154_RADIO_CSMA_CA) &&
 		    ieee802154_get_hw_capabilities(iface) &
 		    IEEE802154_HW_CSMA) {

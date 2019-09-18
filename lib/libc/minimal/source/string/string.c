@@ -179,7 +179,6 @@ int memcmp(const void *m1, const void *m2, size_t n)
 {
 	const char *c1 = m1;
 	const char *c2 = m2;
-
 	if (!n)
 		return 0;
 

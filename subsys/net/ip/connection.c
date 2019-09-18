@@ -530,6 +530,7 @@ enum net_verdict net_conn_input(struct net_pkt *pkt,
 	}
 
 	if (!conn_are_end_points_valid(pkt, ip_hdr, src_port, dst_port)) {
+		printk("Dropping invalid src/dst end-points packet\n");
 		NET_DBG("Dropping invalid src/dst end-points packet");
 		return NET_DROP;
 	}
@@ -608,19 +609,15 @@ enum net_verdict net_conn_input(struct net_pkt *pkt,
 	if (conn) {
 		NET_DBG("[%p] match found cb %p ud %p rank 0x%02x",
 			conn, conn->cb, conn->user_data, conn->flags);
-
 		if (conn->cb(conn, pkt, ip_hdr, proto_hdr,
 			     conn->user_data) == NET_DROP) {
 			goto drop;
 		}
-
 		net_stats_update_per_proto_recv(pkt_iface, proto);
-
 		return NET_OK;
 	}
 
 	NET_DBG("No match found.");
-
 	/* If the destination address is multicast address,
 	 * we will not send an ICMP error as that makes no sense.
 	 */

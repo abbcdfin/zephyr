@@ -87,6 +87,7 @@ LOG_MODULE_REGISTER(net_rpl, CONFIG_NET_RPL_LOG_LEVEL);
 #define NET_RPL_MOP_DEFAULT		NET_RPL_MOP_STORING_MULTICAST
 #else
 #define NET_RPL_MOP_DEFAULT		NET_RPL_MOP_STORING_NO_MULTICAST
+/*NET_RPL_MOP_NON_STORING**/
 #endif
 
 #if defined(CONFIG_NET_RPL_MOP3)
@@ -235,10 +236,6 @@ NET_NBR_TABLE_INIT(NET_NBR_LOCAL, rpl_parents, net_rpl_neighbor_pool,
 			 net_sprint_ipv6_addr(dst));			  \
 		snprintk(prf, sizeof(prf), "%s",			  \
 			 net_sprint_ipv6_addr(prefix));			  \
-		NET_DBG("Send DAO with prefix %s from %s to %s",	  \
-			log_strdup(prf),				  \
-			log_strdup(net_sprint_ipv6_addr(src)),		  \
-			log_strdup(out));				  \
 	} while (0)
 
 static void new_dio_interval(struct net_rpl_instance *instance);
@@ -464,7 +461,6 @@ int net_rpl_dio_send(struct net_if *iface,
 	struct net_pkt *pkt;
 	u16_t value;
 	int ret;
-
 	pkt = net_pkt_alloc_with_buffer(iface,
 					sizeof(struct net_ipv6_hdr) +
 					sizeof(struct net_icmp_hdr) +
@@ -472,32 +468,29 @@ int net_rpl_dio_send(struct net_if *iface,
 					AF_INET6, IPPROTO_ICMPV6,
 					PKT_WAIT_TIME);
 
+
 	if (!pkt) {
+		printk("return non pkt %p\n", pkt);
 		return -ENOMEM;
 	}
-
 	if (!dst) {
 		net_rpl_create_mcast_address(&addr);
 		dst_addr = &addr;
 	} else {
 		dst_addr = dst;
 	}
-
-	if (!net_ipv6_create(pkt, src, dst_addr)) {
+	if (net_ipv6_create(pkt, src, dst_addr)) {
+		printk("no net ipv6 flag\n");
 		net_pkt_unref(pkt);
 		return -ENOMEM;
 	}
-
 	net_pkt_set_iface(pkt, iface);
-
 	if (net_icmpv6_create(pkt, NET_ICMPV6_RPL, NET_RPL_DODAG_INFO_OBJ)) {
 		goto drop;
 	}
-
 	net_pkt_write_u8(pkt, instance->instance_id);
 	net_pkt_write_u8(pkt, dag->version);
 	net_pkt_write_be16(pkt, dag->rank);
-
 	value = net_rpl_dag_is_grounded(dag) << 8;
 	value |= instance->mop << NET_RPL_DIO_MOP_SHIFT;
 	value |= net_rpl_dag_get_preference(dag) & NET_RPL_DIO_PREFERENCE_MASK;
@@ -512,7 +505,6 @@ int net_rpl_dio_send(struct net_if *iface,
 	net_pkt_write_be16(pkt, 0);
 
 	net_pkt_write(pkt, dag->dag_id.s6_addr, sizeof(struct in6_addr));
-
 	if (instance->mc.type != NET_RPL_MC_NONE) {
 		net_rpl_of_update_mc(instance);
 
@@ -555,6 +547,7 @@ int net_rpl_dio_send(struct net_if *iface,
 	net_pkt_write_u8(pkt, 0); /* Reserved */
 	net_pkt_write_u8(pkt, instance->default_lifetime);
 	net_pkt_write_be16(pkt, instance->lifetime_unit);
+	/*printf("\033[1;36m write before    \033[0m\n");*/
 
 	if (dag->prefix_info.length > 0) {
 		net_pkt_write_u8(pkt, NET_RPL_OPTION_PREFIX_INFO);
@@ -569,13 +562,15 @@ int net_rpl_dio_send(struct net_if *iface,
 		net_pkt_write_be32(pkt, dag->prefix_info.lifetime);
 
 		net_pkt_write_be32(pkt, 0); /* reserved */
-		net_pkt_write(pkt, dag->prefix_info.prefix.s6_addr,
+	net_pkt_write(pkt, dag->prefix_info.prefix.s6_addr,
 			      sizeof(struct in6_addr));
 
 	} else {
 		NET_DBG("Prefix info not sent because length was %d",
 			dag->prefix_info.length);
 	}
+	net_pkt_cursor_init(pkt);
+	net_pkt_set_ipv6_next_hdr(pkt, 255U);
 
 	ret = net_ipv6_finalize(pkt, IPPROTO_ICMPV6);
 	if (ret < 0) {
@@ -588,7 +583,6 @@ int net_rpl_dio_send(struct net_if *iface,
 		NET_DBG("Sent a %s DIO with rank %d (iface %p)",
 			dst ? "unicast" : "multicast",
 			instance->current_dag->rank, iface);
-
 		net_stats_update_icmp_sent(iface);
 		net_stats_update_rpl_dio_sent(iface);
 
@@ -618,7 +612,6 @@ static void dio_timer(struct k_work *work)
 		} else {
 			NET_DBG("Sending DIO later because IPv6 link local "
 				"address is not found");
-
 			k_delayed_work_submit(&instance->dio_timer,
 					      DIO_TIMEOUT);
 			return;
@@ -631,9 +624,9 @@ static void dio_timer(struct k_work *work)
 			struct in6_addr *addr =
 				net_if_ipv6_get_ll(rpl_default_iface,
 						   NET_ADDR_PREFERRED);
-
 			if (addr) {
-				net_rpl_dio_send(rpl_default_iface, instance,
+				int re = net_rpl_dio_send(
+					rpl_default_iface, instance,
 						 addr, NULL);
 #if defined(CONFIG_NET_STATISTICS_RPL)
 				instance->dio_send_pkt++;
@@ -659,7 +652,6 @@ static void dio_timer(struct k_work *work)
 		    instance->dio_interval_doublings) {
 			instance->dio_interval_current++;
 		}
-
 		new_dio_interval(instance);
 	}
 }
@@ -772,7 +764,7 @@ int net_rpl_dis_send(struct in6_addr *dst, struct net_if *iface)
 	if (net_pkt_write_u8(pkt, 0)) {
                 goto drop;
         }
-
+	net_pkt_cursor_init(pkt);
 	ret = net_ipv6_finalize(pkt, IPPROTO_ICMPV6);
 	if (ret < 0) {
 		goto drop;
@@ -1276,7 +1268,6 @@ static void net_rpl_set_preferred_parent(struct net_if *iface,
 {
 	if (dag && dag->preferred_parent != parent) {
 		struct in6_addr *addr = net_rpl_get_parent_addr(iface, parent);
-
 		NET_DBG("Preferred parent %s",
 			parent ?
 			log_strdup(net_sprint_ipv6_addr(addr)) : "not set");
@@ -1296,7 +1287,6 @@ static void net_rpl_reset_dio_timer(struct net_rpl_instance *instance)
 	NET_DBG("instance %p current %d min %d", instance,
 		instance->dio_interval_current,
 		instance->dio_interval_min);
-
 	/* Do not reset if we are already on the minimum interval,
 	 * unless forced to do so.
 	 */
@@ -1359,8 +1349,8 @@ struct net_rpl_dag *net_rpl_set_root_with_version(struct net_if *iface,
 	dag->version = version;
 
 	instance->mop = NET_RPL_MOP_DEFAULT;
-
 	instance->ocp = net_rpl_of_get();
+	/*not has tags*/
 
 	net_rpl_set_preferred_parent(iface, dag, NULL);
 
@@ -1386,7 +1376,6 @@ struct net_rpl_dag *net_rpl_set_root_with_version(struct net_if *iface,
 	if (instance->current_dag != dag && instance->current_dag) {
 		/* Remove routes installed by DAOs. */
 		net_rpl_remove_routes(instance->current_dag);
-
 		net_rpl_dag_unjoin(instance->current_dag);
 	}
 
@@ -1812,12 +1801,23 @@ static struct net_rpl_parent *best_parent(struct net_if *iface,
 		    parent->rank == NET_RPL_INFINITE_RANK) {
 			/* ignore this neighbor */
 		} else if (!best) {
+			struct in6_addr *paddr = NULL;
+
+			paddr = net_rpl_get_parent_addr(
+				iface,
+				parent
+			);
 			best = parent;
-		} else {
+		} else{
+			struct in6_addr *paddr = NULL;
+
+			paddr = net_rpl_get_parent_addr(
+				iface,
+				parent
+			);
 			best = net_rpl_of_best_parent(iface, best, parent);
 		}
 	}
-
 	return best;
 }
 
@@ -2192,7 +2192,6 @@ static void send_mcast_dao(struct net_rpl_instance *instance)
 {
 	struct in6_addr *addr = NULL;
 	u8_t i;
-
 	/* Send a DAO for own multicast addresses */
 	for (i = 0U; i < NET_IF_MAX_IPV6_MADDR; i++) {
 		addr =
@@ -2465,7 +2464,6 @@ static void net_rpl_add_dag(struct net_if *iface,
 	struct net_rpl_instance *instance;
 	struct net_rpl_dag *dag, *previous_dag;
 	struct net_rpl_parent *parent = NULL;
-
 	dag = alloc_dag(iface, dio->instance_id, &dio->dag_id);
 	if (!dag) {
 		NET_DBG("Failed to allocate a DAG object!");
@@ -2563,7 +2561,6 @@ static void net_rpl_process_dio(struct net_if *iface,
 	struct net_rpl_dag *dag, *previous_dag;
 	struct net_rpl_instance *instance;
 	struct net_rpl_parent *parent;
-
 #if defined(CONFIG_NET_RPL_MOP3)
 	/* If the root is advertising MOP 2 but we support MOP 3 we can still
 	 * join. In that scenario, we suppress DAOs for multicast targets.
@@ -2790,13 +2787,16 @@ static void net_rpl_process_dio(struct net_if *iface,
 	parent->dtsn = dio->dtsn;
 }
 
-static enum net_verdict handle_dio(struct net_pkt *pkt)
+static enum net_verdict handle_dio(struct net_pkt *pkt,
+				struct net_ipv6_hdr *ip_hdr,
+				struct net_icmp_hdr *icmp_hdr
+				)
 {
 	struct net_rpl_dio dio = { 0 };
 	struct net_nbr *nbr;
 	u8_t subopt_type;
 	u8_t flags, len, tmp;
-
+	/*printk("\033[1;33m dio res . \033[0m\n");*/
 	net_rpl_info(pkt, "DODAG Information Object");
 
 	/* Default values can be overwritten by DIO config option.
@@ -2811,13 +2811,12 @@ static enum net_verdict handle_dio(struct net_pkt *pkt)
 	dio.lifetime_unit = CONFIG_NET_RPL_DEFAULT_LIFETIME_UNIT;
 
 	nbr = net_ipv6_nbr_lookup(net_pkt_iface(pkt),
-				  &NET_IPV6_HDR(pkt)->src);
+				 &ip_hdr->src);
 	if (!nbr) {
 		NET_ASSERT_INFO(net_pkt_lladdr_src(pkt)->len,
 				"Link layer address not set");
-
 		nbr = net_ipv6_nbr_add(net_pkt_iface(pkt),
-				       &NET_IPV6_HDR(pkt)->src,
+				       &ip_hdr->src,
 				       net_pkt_lladdr_src(pkt),
 				       0,
 				       NET_IPV6_NBR_STATE_REACHABLE);
@@ -2845,7 +2844,6 @@ static enum net_verdict handle_dio(struct net_pkt *pkt)
 	net_pkt_skip(pkt, 2);
 
 	net_pkt_read(pkt, dio.dag_id.s6_addr, sizeof(dio.dag_id));
-
 	/* Handle any DIO suboptions */
 	while (!net_pkt_read_u8(pkt, &subopt_type)) {
 		len = 0U;
@@ -2930,7 +2928,6 @@ static enum net_verdict handle_dio(struct net_pkt *pkt)
 					net_pkt_iface(pkt));
 				goto out;
 			}
-
 			/* Path control field not yet implemented (1 byte) */
 			net_pkt_skip(pkt, 1);
 
@@ -2982,7 +2979,7 @@ static enum net_verdict handle_dio(struct net_pkt *pkt)
 
         /* TODO: to deal with malformed rpl message */ 
 
-	net_rpl_process_dio(net_pkt_iface(pkt), &NET_IPV6_HDR(pkt)->src, &dio);
+	net_rpl_process_dio(net_pkt_iface(pkt), &ip_hdr->src, &dio);
 
 out:
 	return NET_DROP;
@@ -3002,7 +2999,9 @@ int net_rpl_dao_send(struct net_if *iface,
 	u8_t prefix_bytes;
 	u8_t prefixlen;
 	int ret;
+	int re_fin;
 
+	/*printk("\033[1;35m dao send in. \033[0m\n");*/
 	/* No DAOs in feather mode. */
 	if (net_rpl_get_mode() == NET_RPL_MODE_FEATHER) {
 		return -EINVAL;
@@ -3071,7 +3070,7 @@ int net_rpl_dao_send(struct net_if *iface,
 	net_pkt_write_u8(pkt, rpl_dao_sequence);
 
 #if defined(CONFIG_NET_RPL_DAO_SPECIFY_DAG)
-	net_pkt_write(pkt, sizeof(dag->dag_id), dag->dag_id.s6_addr);
+	net_pkt_write(pkt, dag->dag_id.s6_addr, sizeof(dag->dag_id));
 #endif
 
 	prefixlen = sizeof(*prefix) * CHAR_BIT;
@@ -3081,7 +3080,7 @@ int net_rpl_dao_send(struct net_if *iface,
 	net_pkt_write_u8(pkt, 2 + prefix_bytes);
 	net_pkt_write_u8(pkt, 0); /* reserved */
 	net_pkt_write_u8(pkt, prefixlen);
-	net_pkt_write(pkt, prefix_bytes, prefix->s6_addr);
+	net_pkt_write(pkt,  prefix->s6_addr, prefix_bytes);
 
 	net_pkt_write_u8(pkt, NET_RPL_OPTION_TRANSIT);
 	net_pkt_write_u8(pkt, 4); /* length */
@@ -3089,10 +3088,12 @@ int net_rpl_dao_send(struct net_if *iface,
 	net_pkt_write_u8(pkt, 0); /* path control */
 	net_pkt_write_u8(pkt, 0); /* path seq */
 	net_pkt_write_u8(pkt, lifetime);
-
         net_pkt_cursor_init(pkt);
-	net_ipv6_finalize(pkt, IPPROTO_ICMPV6);
-
+	net_pkt_set_ipv6_next_hdr(pkt, 255U);
+	re_fin = net_ipv6_finalize(pkt, IPPROTO_ICMPV6);
+	if (re_fin < 0) {
+		goto drop;
+	}
 	ret = net_send_data(pkt);
 	if (ret >= 0) {
 		net_rpl_dao_info(pkt, src, dst, prefix);
@@ -3102,6 +3103,7 @@ int net_rpl_dao_send(struct net_if *iface,
 
 		return 0;
 	}
+	goto drop;
 
 drop:
 	net_pkt_unref(pkt);
@@ -3114,15 +3116,14 @@ static int dao_send(struct net_rpl_parent *parent,
 		    struct net_if *iface)
 {
 	struct in6_addr *prefix;
-
-	prefix = net_if_ipv6_get_global_addr(NET_ADDR_ANY_STATE, &iface);
+	prefix = net_if_ipv6_get_global_addr(NET_ADDR_PREFERRED, &iface);
 	if (!prefix) {
-		NET_DBG("Will not send DAO as no global address was found.");
+		NET_DBG("DAO as no global address was found.");
+		printk("dao prefix is wrong %p\n", prefix);
 		return -EDESTADDRREQ;
 	}
 
 	NET_ASSERT_INFO(iface, "Interface not set");
-
 	return net_rpl_dao_send(iface, parent, prefix, lifetime);
 }
 
@@ -3132,17 +3133,27 @@ static inline int dao_forward(struct net_if *iface,
 {
 	struct net_pkt *pkt;
 	int ret;
+	bool ow;
+	struct net_icmp_hdr *icmp_hdr;
 
+	net_pkt_cursor_init(orig);
 	pkt = net_pkt_clone(orig, BUF_TIMEOUT);
 	if (!pkt) {
 		return -ENOMEM;
 	}
-
 	net_ipaddr_copy(&NET_IPV6_HDR(pkt)->dst, dst);
-
+	net_ipaddr_copy(&NET_IPV6_HDR(pkt)->src, &NET_IPV6_HDR(orig)->dst);
+	net_pkt_cursor_init(pkt);
+	ow = net_pkt_is_being_overwritten(pkt);
+	net_pkt_set_overwrite(pkt, true);
+	net_pkt_skip(pkt, net_pkt_ip_hdr_len(pkt) +
+		sizeof(icmp_hdr->type) + sizeof(icmp_hdr->code));
+	net_pkt_write_be16(pkt, 0);
+	net_pkt_set_overwrite(pkt, ow);
 	net_pkt_cursor_init(pkt);
 	net_ipv6_finalize(pkt, IPPROTO_ICMPV6);
-
+	pkt->lladdr_src.addr = NULL;
+	pkt->lladdr_dst.addr = NULL;
 	ret = net_send_data(pkt);
 	if (ret >= 0) {
 		net_stats_update_icmp_sent(iface);
@@ -3150,7 +3161,6 @@ static inline int dao_forward(struct net_if *iface,
 	} else {
 		net_pkt_unref(pkt);
 	}
-
 	return ret;
 }
 
@@ -3163,7 +3173,6 @@ static int dao_ack_send(struct in6_addr *src,
 {
 	struct net_pkt *pkt;
 	int ret;
-
 	NET_DBG("Sending a DAO ACK with sequence number %d to %s",
 		sequence, log_strdup(net_sprint_ipv6_addr(dst)));
 
@@ -3193,7 +3202,7 @@ static int dao_ack_send(struct in6_addr *src,
 	net_pkt_write_u8(pkt, 0); /* reserved */
 	net_pkt_write_u8(pkt, sequence);
 	net_pkt_write_u8(pkt, status); /* status */
-
+	net_pkt_cursor_init(pkt);
 	ret = net_ipv6_finalize(pkt, IPPROTO_ICMPV6);
 	if (ret < 0) {
 		goto drop;
@@ -3238,7 +3247,6 @@ static int forwarding_dao(struct net_rpl_instance *instance,
 
 		net_ipaddr_copy(&src, &NET_IPV6_HDR(pkt)->src);
 		net_ipaddr_copy(&dst, &NET_IPV6_HDR(pkt)->dst);
-
 		r = dao_forward(dag->instance->iface, pkt, paddr);
 		if (r >= 0) {
 			return r;
@@ -3279,6 +3287,7 @@ static bool is_root(struct net_rpl_instance *instance)
 
 static enum net_verdict handle_dao(struct net_pkt *pkt)
 {
+	/*printk("\033[1;33m dao res . \033[0m\n");*/
 	struct in6_addr *dao_sender = &NET_IPV6_HDR(pkt)->src;
 	struct net_rpl_route_entry *extra = NULL;
 	struct net_rpl_parent *parent = NULL;
@@ -3296,12 +3305,11 @@ static enum net_verdict handle_dao(struct net_pkt *pkt)
 	u8_t subopt_type;
 	u8_t len;
 	int r = -EINVAL;
-
 	net_rpl_info(pkt, "Destination Advertisement Object");
-
         /* TODO: confirm that the cursor is at the right position */
 	if (net_pkt_read_u8(pkt, &instance_id)) {
 		NET_DBG("Cannot get instance id");
+		printk("Cannot get instance id\n");
 		return NET_DROP;
 	}
 
@@ -3309,6 +3317,9 @@ static enum net_verdict handle_dao(struct net_pkt *pkt)
 	if (!instance) {
 		NET_DBG("Ignoring DAO for an unknown instance %d",
 			instance_id);
+		printk("Ignoring DAO for an unknown instance %d\n",
+			instance_id);
+
 		return NET_DROP;
 	}
 
@@ -3327,6 +3338,9 @@ static enum net_verdict handle_dao(struct net_pkt *pkt)
 		if (memcmp(&dag->dag_id, &addr, sizeof(dag->dag_id))) {
 			NET_DBG("Ignoring DAO for a DAG %s different from ours",
 				log_strdup(net_sprint_ipv6_addr(&dag->dag_id)));
+
+
+
 			return NET_DROP;
 		}
 	}
@@ -3363,7 +3377,6 @@ static enum net_verdict handle_dao(struct net_pkt *pkt)
 			return NET_DROP;
 		}
 	}
-
 	target_len = 0U;
 
 	/* Handle any DAO suboptions */
@@ -3402,7 +3415,6 @@ static enum net_verdict handle_dao(struct net_pkt *pkt)
 			break;
 		}
 	}
-
 	NET_DBG("DAO lifetime %d addr %s/%d", lifetime,
 		log_strdup(net_sprint_ipv6_addr(&addr)), target_len);
 
@@ -3423,11 +3435,8 @@ static enum net_verdict handle_dao(struct net_pkt *pkt)
 
 	if (lifetime == NET_RPL_ZERO_LIFETIME) {
 		struct in6_addr *nexthop;
-
 		NET_DBG("No-Path DAO received");
-
 		route = net_route_lookup(net_pkt_iface(pkt), &addr);
-
 		rpl_nbr = net_route_get_nbr(route);
 		if (rpl_nbr) {
 			extra = net_nbr_extra_data(rpl_nbr);
@@ -3467,7 +3476,6 @@ static enum net_verdict handle_dao(struct net_pkt *pkt)
 
 		return NET_DROP;
 	}
-
 	NET_DBG("Adding DAO route to %s",
 		log_strdup(net_sprint_ipv6_addr(dao_sender)));
 
@@ -3510,7 +3518,6 @@ static enum net_verdict handle_dao(struct net_pkt *pkt)
 			ipv6_nbr = NULL;
 		}
 	}
-
 	if (!ipv6_nbr) {
 		ipv6_nbr = net_ipv6_nbr_add(net_pkt_iface(pkt), dao_sender,
 					    net_pkt_lladdr_src(pkt), false,
@@ -3534,16 +3541,15 @@ static enum net_verdict handle_dao(struct net_pkt *pkt)
 			return NET_DROP;
 		}
 	}
-
 	route = net_rpl_add_route(dag, net_pkt_iface(pkt),
 				  &addr, target_len, dao_sender);
 	if (!route) {
 		net_stats_update_rpl_mem_overflows(net_pkt_iface(pkt));
+		printk("could not add a route after receiving a Dao\n\n\n");
 
 		NET_DBG("Could not add a route after receiving a DAO");
 		return NET_DROP;
 	}
-
 	rpl_nbr = net_route_get_nbr(route);
 
 	extra = net_nbr_extra_data(rpl_nbr);
@@ -3552,7 +3558,6 @@ static enum net_verdict handle_dao(struct net_pkt *pkt)
 		extra->route_source = learned_from;
 		extra->no_path_received = false;
 	}
-
 #if NET_RPL_MULTICAST
 fwd_dao:
 #endif
@@ -3598,7 +3603,6 @@ static enum net_verdict handle_dao_ack(struct net_pkt *pkt)
 	u8_t instance_id;
 	u8_t sequence;
 	u8_t status;
-
 	net_rpl_info(pkt, "Destination Advertisement Object Ack");
 
 

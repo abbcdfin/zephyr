@@ -392,13 +392,12 @@ enum net_verdict net_ipv6_input(struct net_pkt *pkt, bool is_loopback)
 	int pkt_len;
 
 	net_stats_update_ipv6_recv(net_pkt_iface(pkt));
-
 	hdr = (struct net_ipv6_hdr *)net_pkt_get_data(pkt, &ipv6_access);
 	if (!hdr) {
+		printf("\033[1;31m ipv6 buffer false\n \033[0m");
 		NET_DBG("DROP: no buffer");
 		goto drop;
 	}
-
 	pkt_len = ntohs(hdr->len) + sizeof(struct net_ipv6_hdr);
 	if (real_len < pkt_len) {
 		NET_DBG("DROP: pkt len per hdr %d != pkt real len %d",
@@ -407,11 +406,6 @@ enum net_verdict net_ipv6_input(struct net_pkt *pkt, bool is_loopback)
 	} else if (real_len > pkt_len) {
 		net_pkt_update_length(pkt, pkt_len);
 	}
-
-	NET_DBG("IPv6 packet len %d received from %s to %s", pkt_len,
-		log_strdup(net_sprint_ipv6_addr(&hdr->src)),
-		log_strdup(net_sprint_ipv6_addr(&hdr->dst)));
-
 	if (net_ipv6_is_addr_mcast(&hdr->src) ||
 	    net_ipv6_is_addr_mcast_scope(&hdr->dst, 0)) {
 		NET_DBG("DROP: multicast packet");
@@ -444,6 +438,7 @@ enum net_verdict net_ipv6_input(struct net_pkt *pkt, bool is_loopback)
 	if (!net_ipv6_is_my_addr(&hdr->dst) &&
 	    !net_ipv6_is_my_maddr(&hdr->dst) &&
 	    !net_ipv6_is_addr_mcast(&hdr->dst)) {
+		net_pkt_set_family(pkt, AF_INET6);
 		if (ipv6_route_packet(pkt, hdr) == NET_OK) {
 			return NET_OK;
 		}
@@ -539,7 +534,6 @@ enum net_verdict net_ipv6_input(struct net_pkt *pkt, bool is_loopback)
 
 	net_pkt_set_ipv6_ext_len(pkt, ext_len);
 	net_pkt_set_family(pkt, PF_INET6);
-
 	switch (nexthdr) {
 	case IPPROTO_ICMPV6:
 		verdict = net_icmpv6_input(pkt, hdr);

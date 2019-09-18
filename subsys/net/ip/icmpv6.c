@@ -202,6 +202,7 @@ drop:
 int net_icmpv6_send_error(struct net_pkt *orig, u8_t type, u8_t code,
 			  u32_t param)
 {
+	printf("\033[1;31m  send error   \033[0m\n");
 	NET_PKT_DATA_ACCESS_CONTIGUOUS_DEFINE(ipv6_access, struct net_ipv6_hdr);
 	int err = -EIO;
 	struct net_ipv6_hdr *ip_hdr;
@@ -305,7 +306,7 @@ drop:
 
 drop_no_pkt:
 	net_stats_update_icmp_drop(net_pkt_iface(orig));
-
+	printk("error %d\n", err);
 	return err;
 }
 
@@ -385,20 +386,21 @@ enum net_verdict net_icmpv6_input(struct net_pkt *pkt,
 	icmp_hdr = (struct net_icmp_hdr *)net_pkt_get_data(pkt, &icmp_access);
 	if (!icmp_hdr) {
 		NET_DBG("DROP: NULL ICMPv6 header");
+		printk("Drop:NULL ICMPV6 header\n");
 		return NET_DROP;
 	}
 
 	if (net_calc_chksum_icmpv6(pkt) != 0U) {
-		NET_DBG("DROP: invalid checksum");
+		printk("Drop:invauld check sum\n");
+		NET_DBG("DROP: invalid checksum\n");
 		goto drop;
 	}
 
 	net_pkt_acknowledge_data(pkt, &icmp_access);
 
-	NET_DBG("ICMPv6 %s received type %d code %d",
+	NET_DBG("ICMPv6 %s received type %d code %d\n",
 		net_icmpv6_type2str(icmp_hdr->type),
 		icmp_hdr->type, icmp_hdr->code);
-
 	net_stats_update_icmp_recv(net_pkt_iface(pkt));
 
 	SYS_SLIST_FOR_EACH_CONTAINER(&handlers, cb, node) {

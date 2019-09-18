@@ -1583,7 +1583,7 @@ static int net_pkt_cursor_operate(struct net_pkt *pkt,
 
 int net_pkt_skip(struct net_pkt *pkt, size_t skip)
 {
-	NET_DBG("pkt %p skip %zu", pkt, skip);
+	NET_DBG("pkt %p skip %zu\n", pkt, skip);
 
 	return net_pkt_cursor_operate(pkt, NULL, skip, false, true);
 }
@@ -1628,12 +1628,11 @@ int net_pkt_read_be32(struct net_pkt *pkt, u32_t *data)
 
 int net_pkt_write(struct net_pkt *pkt, const void *data, size_t length)
 {
-	NET_DBG("pkt %p data %p length %zu", pkt, data, length);
-
 	if (data == pkt->cursor.pos && net_pkt_is_contiguous(pkt, length)) {
+		int net_ps = net_pkt_skip(pkt, length);
+		return net_ps;
 		return net_pkt_skip(pkt, length);
 	}
-
 	return net_pkt_cursor_operate(pkt, (void *)data, length, true, true);
 }
 
@@ -1912,10 +1911,11 @@ int net_pkt_set_data(struct net_pkt *pkt,
 		     struct net_pkt_data_access *access)
 {
 	if (IS_ENABLED(CONFIG_NET_HEADERS_ALWAYS_CONTIGUOUS)) {
-		return net_pkt_skip(pkt, access->size);
+		int re = net_pkt_skip(pkt, access->size);
+		return re;
 	}
-
-	return net_pkt_write(pkt, access->data, access->size);
+	int re =  net_pkt_write(pkt, access->data, access->size);
+	return re;
 }
 
 void net_pkt_init(void)

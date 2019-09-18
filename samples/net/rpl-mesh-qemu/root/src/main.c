@@ -64,7 +64,6 @@ void main(void)
 		printk("CURRENT_VERSION should be greater or eqaul to 0");
 		return;
 	}
-
 	/* Setup the root node */
 	struct net_rpl_dag *dag = net_rpl_set_root_with_version(
 		iface, CONFIG_NET_RPL_DEFAULT_INSTANCE, &prefix, init_version);

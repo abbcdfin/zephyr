@@ -434,7 +434,6 @@ u8_t ieee802154_compute_header_size(struct net_if *iface,
 		}
 	} else {
 		struct net_nbr *nbr;
-
 		nbr = net_ipv6_nbr_lookup(iface, dst);
 		if (nbr) {
 			/* ToDo: handle short addresses */
@@ -662,7 +661,6 @@ bool ieee802154_create_data_frame(struct ieee802154_context *ctx,
 	u8_t *p_buf = buf->data;
 	u8_t *buf_start = p_buf;
 	bool broadcast;
-
 	fs = generate_fcf_grounds(&p_buf, ctx->ack_requested);
 
 	fs->fc.frame_type = IEEE802154_FRAME_TYPE_DATA;
@@ -670,9 +668,7 @@ bool ieee802154_create_data_frame(struct ieee802154_context *ctx,
 
 	params.dst.pan_id = ctx->pan_id;
 	params.pan_id = ctx->pan_id;
-
 	broadcast = data_addr_to_fs_settings(dst, fs, &params);
-
 	p_buf = generate_addressing_fields(ctx, fs, &params, p_buf);
 
 #ifdef CONFIG_NET_L2_IEEE802154_SECURITY

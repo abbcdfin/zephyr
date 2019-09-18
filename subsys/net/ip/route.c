@@ -305,9 +305,8 @@ struct net_route_entry *net_route_add(struct net_if *iface,
 	struct net_route_nexthop *nexthop_route;
 	struct net_route_entry *route;
 #if defined(CONFIG_NET_MGMT_EVENT_INFO)
-       struct net_event_ipv6_route info;
+	struct net_event_ipv6_route info;
 #endif
-
 	NET_ASSERT(addr);
 	NET_ASSERT(iface);
 	NET_ASSERT(nexthop);
@@ -821,7 +820,8 @@ int net_route_packet(struct net_pkt *pkt, struct in6_addr *nexthop)
 	net_pkt_lladdr_dst(pkt)->len = lladdr->len;
 
 	net_pkt_set_iface(pkt, nbr->iface);
-
+	net_pkt_cursor_init(pkt);
+	printk(" route send data\n");
 	return net_send_data(pkt);
 }
 

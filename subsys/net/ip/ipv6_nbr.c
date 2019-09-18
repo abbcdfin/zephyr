@@ -272,7 +272,6 @@ static struct net_nbr *nbr_lookup(struct net_nbr_table *table,
 		if (iface && nbr->iface != iface) {
 			continue;
 		}
-
 		if (net_ipv6_addr_cmp(&net_ipv6_nbr_data(nbr)->addr, addr)) {
 			return nbr;
 		}
@@ -930,7 +929,6 @@ try_send:
 		struct net_linkaddr_storage *lladdr;
 
 		lladdr = net_nbr_get_lladdr(nbr->idx);
-
 		net_pkt_lladdr_dst(pkt)->addr = lladdr->addr;
 		net_pkt_lladdr_dst(pkt)->len = lladdr->len;
 

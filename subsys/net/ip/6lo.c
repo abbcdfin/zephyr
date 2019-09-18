@@ -1325,7 +1325,6 @@ static bool uncompress_IPHC_header(struct net_pkt *pkt,
 	struct net_6lo_context *src = NULL;
 	struct net_6lo_context *dst = NULL;
 #endif
-
 	if (dry_run && !diff) {
 		return false;
 	}
@@ -1345,7 +1344,35 @@ static bool uncompress_IPHC_header(struct net_pkt *pkt,
 		if (!frag) {
 			return false;
 		}
+		int len = 0;
 
+		if (net_pkt_lladdr_dst(pkt)->addr &&
+			net_pkt_lladdr_src(pkt)->addr) {
+			memcpy(frag->data+len,
+				net_pkt_lladdr_dst(pkt)->addr,
+				net_pkt_lladdr_dst(pkt)->len);
+			len += net_pkt_lladdr_src(pkt)->addr -
+				net_pkt_lladdr_dst(pkt)->addr;
+			memcpy(frag->data+len,
+				net_pkt_lladdr_src(pkt)->addr,
+				net_pkt_lladdr_src(pkt)->len);
+			len += net_pkt_lladdr_src(pkt)->len;
+		} else {
+			if (net_pkt_lladdr_dst(pkt)->addr) {
+				memcpy(frag->data+len,
+					net_pkt_lladdr_dst(pkt)->addr,
+					net_pkt_lladdr_dst(pkt)->len);
+					len += net_pkt_lladdr_dst(pkt)->len;
+			}
+			if (net_pkt_lladdr_src(pkt)->addr) {
+				memcpy(frag->data+len,
+					net_pkt_lladdr_src(pkt)->addr,
+					net_pkt_lladdr_src(pkt)->len);
+				len += net_pkt_lladdr_src(pkt)->len;
+			}
+		}
+		net_buf_add(frag, len);
+		net_buf_pull(frag, len);
 		ipv6 = (struct net_ipv6_hdr *)(frag->data);
 	} else {
 		/* This is meant to avoid compiler warnings: that area
@@ -1465,6 +1492,8 @@ static bool uncompress_IPHC_header(struct net_pkt *pkt,
 		offset += 2U;
 	}
 
+
+
 	if (!dry_run) {
 		net_buf_add(frag, NET_UDPH_LEN);
 	} else {
@@ -1565,7 +1594,6 @@ bool net_6lo_uncompress(struct net_pkt *pkt)
 	    NET_6LO_DISPATCH_IPHC) {
 		/* Uncompress IPHC header */
 		return uncompress_IPHC_header(pkt, false, NULL);
-
 	} else if ((pkt->frags->data[0] & NET_6LO_DISPATCH_IPV6) ==
 		   NET_6LO_DISPATCH_IPV6) {
 		/* Uncompress IPv6 header, it has only IPv6 dispatch in the
@@ -1593,6 +1621,4 @@ int net_6lo_uncompress_hdr_diff(struct net_pkt *pkt)
 		   NET_6LO_DISPATCH_IPV6) {
 		return -1;
 	}
-
-	return 0;
 }

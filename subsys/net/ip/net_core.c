@@ -291,7 +291,6 @@ static inline int check_ip_addr(struct net_pkt *pkt)
 int net_send_data(struct net_pkt *pkt)
 {
 	int status;
-
 	if (!pkt || !pkt->frags) {
 		return -ENODATA;
 	}
@@ -329,7 +328,6 @@ int net_send_data(struct net_pkt *pkt)
 	if (net_if_send_data(net_pkt_iface(pkt), pkt) == NET_DROP) {
 		return -EIO;
 	}
-
 	return 0;
 }
 
